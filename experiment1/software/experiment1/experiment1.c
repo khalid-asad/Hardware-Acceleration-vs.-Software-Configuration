@@ -1,0 +1,286 @@
+// Copyright by Adam Kinsman, Henry Ko and Nicola Nicolici
+// Developed for the Embedded Systems course (COE4DS4)
+// Department of Electrical and Computer Engineering
+// McMaster University
+// Ontario, Canada
+
+// This is the embedded software for the LCD design
+
+#include <stdio.h>
+#include "io.h"
+#include "system.h"
+#include "sys/alt_irq.h"
+#include "sys/alt_stdio.h"
+#include "priv/alt_busy_sleep.h"
+
+int cursor_position_y = 8, cursor_position_x = 16;
+int current_square = 0;
+//{0,7,6,5,4,3,2,1,0,7}
+int square_colours[15][10] = { {0,7,6,5,4,3,2,1,0,7},	//y,x
+								{6,5,4,3,2,1,0,7,6,5},
+								{4,3,2,1,0,7,6,5,4,3},
+								{2,1,0,7,6,5,4,3,2,1},
+								{0,7,6,5,4,3,2,1,0,7},
+								{6,5,4,3,2,1,0,7,6,5},
+								{4,3,2,1,0,7,6,5,4,3},
+								{2,1,0,7,6,5,4,3,2,1},
+								{0,7,6,5,4,3,2,1,0,7},
+								{6,5,4,3,2,1,0,7,6,5},
+								{4,3,2,1,0,7,6,5,4,3},
+								{2,1,0,7,6,5,4,3,2,1},
+								{0,7,6,5,4,3,2,1,0,7},
+								{6,5,4,3,2,1,0,7,6,5},
+								{4,3,2,1,0,7,6,5,4,3} };
+
+int RGB_colour(int colour) {
+    switch (colour & 0x7) {
+        case 0 : return 0x00000000; // black 7FFF7FFF
+        case 1 : return 0x000003FF; // red 0x00000001
+        case 2 : return 0x7C007C00; // green 3FF8400
+        case 3 : return 0x7C007FFF; // yellow 3FF8001
+        case 4 : return 0x03FF0000; // blue 10000
+        case 5 : return 0x03FF03FF; // magenta FC01
+        case 6 : return 0x7FFF7C00; // cyan 8400
+        case 7 : return 0x7FFF7FFF; // white 8001
+    }
+    return 0x00000000;
+}
+
+int RGB_colour_neg(int colour) {
+    switch (colour & 0x7) {
+        case 7 : return 0x00000000; //
+        case 6 : return 0x000003FF; //
+        case 5 : return 0x7C007C00; //
+        case 4 : return 0x7C007FFF; //
+        case 3 : return 0x03FF0000; //
+        case 2 : return 0x03FF03FF; //
+        case 1 : return 0x7FFF7C00; //
+        case 0 : return 0x7FFF7FFF;
+    }
+    return 0x00000000;
+}
+
+int colour_reverse(int colour){
+    switch (colour & 0x7) {
+        case 7 : return 0; //
+        case 6 : return 1; //
+        case 5 : return 2; //
+        case 4 : return 3; //
+        case 3 : return 4; //
+        case 2 : return 5; //
+        case 1 : return 6; //
+        case 0 : return 7;
+    }
+    return 0;
+}
+
+char * find_colour(int colour){
+    switch (colour & 0x7) {
+		case 0 : return "Black"; // black 7FFF7FFF
+		case 1 : return "Red"; // red 0x00000001
+		case 2 : return "Green"; // green 3FF8400
+		case 3 : return "Yellow"; // yellow 3FF8001
+		case 4 : return "Blue"; // blue 10000
+		case 5 : return "Magenta"; // magenta FC01
+		case 6 : return "Cyan"; // cyan 8400
+		case 7 : return "White"; // white 8001
+    }
+    return "Black";
+}
+
+int find_current_square(){
+	return ((((cursor_position_y-8)/32)*10)+(((cursor_position_x-16))/64));
+}
+
+void check_row_colours(){
+	int i = 0, j = 0;
+	int temp = 0, counter = 0;
+	for ( i = 0; i < 15; i++ ) {
+		temp = square_colours[i][0];
+		for ( j = 1; j < 10; j++ ) {
+			if(temp == square_colours[i][j]){
+				counter++;
+				//printf("counter = %d \n", counter);
+			}else{
+				counter = 0;
+				j=10;
+			}
+		}
+		if(counter == 9){
+			printf("All Rectangles from Row %d have colour: %s (rows are 0 to 14)\n", i, find_colour(square_colours[i][0]));
+		}
+		counter = 0;
+	}
+}
+
+void draw_vertical_bars(int height, int width);
+
+void TouchPanel_int(void) {
+    static int width = 64, height = 32;
+    int TP_val, x_val, y_val, key = 6;
+
+    TP_val = IORD(NIOS_LCD_COMPONENT_0_TOUCHPANEL_BASE, 0);
+    x_val = (TP_val >> 20) & 0xFF;
+    y_val = (TP_val >> 4) & 0xFF;
+
+    if (((TP_val >> 31) & 0x1) && (x_val >= 0xC9) && (x_val <= 0xF1)) {
+        if ((y_val >= 0x17) && (y_val <= 0x33)) { // Key 0
+            key = 0;
+            IOWR(NIOS_LCD_COMPONENT_0_CONSOLE_BASE, 0, 0x1);
+        }
+        if ((y_val >= 0x3D) && (y_val <= 0x58)) { // Key 1
+            key = 1;
+            IOWR(NIOS_LCD_COMPONENT_0_CONSOLE_BASE, 0, 0x2);
+        }
+        if ((y_val >= 0x62) && (y_val <= 0x7E)) { // Key 2
+            key = 2;
+            IOWR(NIOS_LCD_COMPONENT_0_CONSOLE_BASE, 0, 0x4);
+        }
+        if ((y_val >= 0x88) && (y_val <= 0xA4)) { // Key 3
+            key = 3;
+            IOWR(NIOS_LCD_COMPONENT_0_CONSOLE_BASE, 0, 0x8);
+        }
+        if ((y_val >= 0xAE) && (y_val <= 0xC9)) { // Key 4
+            key = 4;
+            IOWR(NIOS_LCD_COMPONENT_0_CONSOLE_BASE, 0, 0x10);
+        }
+        if ((y_val >= 0xD3) && (y_val <= 0xEF)) { // Key 5
+            key = 5;
+            IOWR(NIOS_LCD_COMPONENT_0_CONSOLE_BASE, 0, 0x20);
+        }
+    } else IOWR(NIOS_LCD_COMPONENT_0_CONSOLE_BASE, 0, 0x0);
+        
+    if (IORD(NIOS_LCD_COMPONENT_0_TOUCHPANEL_BASE, 2) & 0x2) { // posedge
+        if ((key == 0) && (height < 640)) {
+			cursor_position_y = cursor_position_y - 32;
+			if (cursor_position_y < 0){
+				cursor_position_y = 456;
+				//cursor_position_y = 455;
+			}
+			current_square = find_current_square();
+			//height++;
+			draw_vertical_bars(height, width);
+        }else if ((key == 1) && (height > 1)) {
+        	cursor_position_y = cursor_position_y + 32;
+        	if (cursor_position_y > 480){
+        		cursor_position_y = 8;
+        		//cursor_position_y = 7;
+        	}
+        	current_square = find_current_square();
+        	//height--;
+        	draw_vertical_bars(height, width);
+        }else if ((key == 2) && (height < 640)) {
+        	cursor_position_x = cursor_position_x - 64;
+        	if (cursor_position_x < 0){
+        		cursor_position_x = 592;
+        		//cursor_position_x = 591;
+        	}
+        	current_square = find_current_square();
+            //width--;
+        	draw_vertical_bars(height, width);
+        }else if ((key == 3) && (height > 1)) {
+        	cursor_position_x = cursor_position_x + 64;
+        	if (cursor_position_x > 640){
+        		cursor_position_x = 16;
+        		//cursor_position_x = 15;
+        	}
+        	current_square = find_current_square();
+            //width++;
+        	draw_vertical_bars(height, width);
+        }else if ((key == 4) && (height > 1)) {
+        	current_square = find_current_square();
+        	if (square_colours[((cursor_position_y-8)/32)][(((cursor_position_x-16))/64)] == 7){
+        		square_colours[((cursor_position_y-8)/32)][(((cursor_position_x-16))/64)] = 0;
+        	}else{
+        		square_colours[((cursor_position_y-8)/32)][(((cursor_position_x-16))/64)]++;
+        	}
+        	draw_vertical_bars(height, width);
+        	check_row_colours();
+        }else if ((key == 5) && (height < 640)) {
+        	current_square = find_current_square();
+        	if (square_colours[((cursor_position_y-8)/32)][(((cursor_position_x-16))/64)] == 0){
+        		square_colours[((cursor_position_y-8)/32)][(((cursor_position_x-16))/64)] = 7;
+        	}else{
+        		square_colours[((cursor_position_y-8)/32)][(((cursor_position_x-16))/64)]--;
+        	}
+        	draw_vertical_bars(height, width);
+        	check_row_colours();
+        }
+    }
+
+    IOWR(NIOS_LCD_COMPONENT_0_CONSOLE_BASE, 0, 0x0);
+    TP_val = IORD(NIOS_LCD_COMPONENT_0_TOUCHPANEL_BASE, 2);
+    IOWR(NIOS_LCD_COMPONENT_0_TOUCHPANEL_BASE, 2, TP_val & 0x30);
+}
+
+void draw_vertical_bars(int height, int width) {
+    int i, j, colour = 0, row_start_colour = 0;
+    static int cursor_width = 32, cursor_height = 16;
+    int RGB = RGB_colour(colour);
+    int height_counter = 0, width_counter = 0;
+	int row_counter = 0, column_counter = 0;
+	int temp_colour = 0, height_flag = 0;
+	
+    // Set pixel position to top-left corner
+    IOWR(NIOS_LCD_COMPONENT_0_IMAGE_BASE, 2, 0x1);
+    //IOWR(NIOS_LCD_COMPONENT_0_IMAGE_BASE, 1, 0x1);
+    for (i = 0; i < 480; i++) {
+        width_counter = 0;
+        colour = row_start_colour;
+        for (j = 0; j < 640; j++) {
+				if ( ((j >= cursor_position_x) && (j < (cursor_position_x+cursor_width))) && ((i >= cursor_position_y) && (i < (cursor_position_y+cursor_height))) ){
+					IOWR(NIOS_LCD_COMPONENT_0_IMAGE_BASE, 0, RGB_colour_neg(square_colours[row_counter][column_counter]));
+				}else{
+					//temp_colour = square_colours[row_counter][column_counter] & 0x7;
+					IOWR(NIOS_LCD_COMPONENT_0_IMAGE_BASE, 0, RGB_colour(square_colours[row_counter][column_counter]));
+				}
+            width_counter++;
+            if (width_counter == width) {
+            	column_counter++;
+                colour--;
+                width_counter = 0;
+                RGB = RGB_colour(colour);
+            }
+        }
+		column_counter = 0;
+        height_counter++;
+        if (height_counter == height) {
+        	height_flag = 1;
+			row_counter++;
+        	row_start_colour = colour;
+        	colour--;
+            height_counter = 0;
+            RGB = RGB_colour(colour);
+        }else{
+        	height_flag = 0;
+        }
+    }
+    /*printf("Current cursor position of X: %d to %d and Y: %d to %d.\n", cursor_position_x, cursor_position_x+32, cursor_position_y, cursor_position_y+16);
+    printf("In square: %d\n", current_square);
+	
+	for ( i = 0; i < 15; i++ ) {
+		for ( j = 0; j < 10; j++ ) {
+			printf("%d ", square_colours[i][j]);
+		}
+		printf("\n");
+	}*/
+}
+
+
+int main()
+{
+	// y then x
+	//square_colours
+	
+    printf("Experiment 1!\n");
+    alt_irq_register(NIOS_LCD_COMPONENT_0_TOUCHPANEL_IRQ, NULL, (void *)TouchPanel_int);
+
+    // Turn button indicators off
+    IOWR(NIOS_LCD_COMPONENT_0_CONSOLE_BASE, 0, 0x0);
+	
+    draw_vertical_bars(32, 64);
+
+    while (1);        
+
+    return 0;
+}
